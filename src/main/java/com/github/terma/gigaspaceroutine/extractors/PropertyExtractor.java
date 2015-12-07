@@ -2,7 +2,7 @@ package com.github.terma.gigaspaceroutine.extractors;
 
 import com.gigaspaces.document.SpaceDocument;
 
-public class PropertyExtractor implements Extractor<Object> {
+public class PropertyExtractor implements Extractor<SpaceDocument, Object> {
 
     private final String property;
 

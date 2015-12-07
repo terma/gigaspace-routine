@@ -1,6 +1,7 @@
 package com.github.terma.gigaspaceroutine;
 
 import com.gigaspaces.document.SpaceDocument;
+import com.github.terma.gigaspaceroutine.extractors.NoExtractor;
 import com.github.terma.gigaspaceroutine.extractors.PropertyExtractor;
 import com.github.terma.gigaspaceroutine.filters.EqFilter;
 import com.j_spaces.core.client.SQLQuery;
@@ -82,7 +83,7 @@ public class RemoteTableTest {
         writeDocument(gigaSpace, false, "Z");
         writeDocument(gigaSpace, false, "A");
         writeDocument(gigaSpace, false, "E");
-        Table tableA = new LocalTable(Arrays.asList(
+        Table tableA = new LocalTable(Collections.<Column>emptyList(), Arrays.asList(
                 (Map<String, Object>) new HashMap<String, Object>() {{
                     put("name", "Roma");
                     put("id", "Z");
@@ -103,10 +104,47 @@ public class RemoteTableTest {
         Assert.assertEquals(null, data.get(2).get("name"));
     }
 
+    @Test
+    public void fetchJoinedAndSorted() {
+        // given
+        gigaSpace.clear(null);
+        writeDocument(gigaSpace, false, "Z");
+        writeDocument(gigaSpace, false, "A");
+        writeDocument(gigaSpace, false, "E");
+        Table tableA = new LocalTable(
+                Arrays.asList(
+                        new Column(NoExtractor.get(), "id"),
+                        new Column(NoExtractor.get(), "name")),
+                Arrays.asList(
+                        (Map<String, Object>) new HashMap<String, Object>() {{
+                            put("name", "Zoma");
+                            put("id", "Z");
+                        }}, new HashMap<String, Object>() {{
+                            put("name", "Aoma");
+                            put("id", "A");
+                        }}, new HashMap<String, Object>() {{
+                            put("name", "Ooma");
+                            put("id", "E");
+                        }}));
+
+        // when
+        List<Map<String, Object>> data = new RemoteTable("A", gigaSpace, source, columns)
+                .join("C1", tableA, "id")
+                .sortBy("name")
+                .fetch();
+
+        // then
+        Assert.assertEquals(3, data.size());
+        Assert.assertEquals("Aoma", data.get(0).get("name"));
+        Assert.assertEquals("Ooma", data.get(1).get("name"));
+        Assert.assertEquals("Zoma", data.get(2).get("name"));
+
+    }
+
     @Ignore
     @Test
     public void joinAndFetchFiltered() {
-        Table tableA = new LocalTable(null);
+        Table tableA = new LocalTable(columns, null);
         new RemoteTable("A", gigaSpace, source, columns).join("C1", tableA, "id").addFilter("name", new EqFilter(true)).fetch();
 
     }

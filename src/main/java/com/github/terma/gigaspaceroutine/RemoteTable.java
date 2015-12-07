@@ -4,7 +4,7 @@ import com.gigaspaces.async.AsyncResult;
 import com.gigaspaces.document.SpaceDocument;
 import com.gigaspaces.query.IdsQuery;
 import com.github.terma.gigaspaceroutine.comparators.LeftToRightComparator;
-import com.github.terma.gigaspaceroutine.comparators.StringComparator;
+import com.github.terma.gigaspaceroutine.comparators.StringKeyComparator;
 import com.github.terma.gigaspaceroutine.extractors.PropertyExtractor;
 import com.github.terma.gigaspaceroutine.filters.Filter;
 import com.j_spaces.core.client.SQLQuery;
@@ -55,18 +55,40 @@ public class RemoteTable implements Table {
         return this;
     }
 
+    private List<Column> getColumnsForSort() {
+        List<Column> result = new ArrayList<>();
+        result.add(new Column(new PropertyExtractor(idProperty), idProperty));
+
+        Set<String> joinNames = getJoinColumnNames();
+        for (String s : sortBy) {
+            if (joinNames.contains(s)) continue; // skip join columns
+            result.add(new Columns(getColumns()).find(s));
+        }
+
+        for (Join join : joins) {
+            result.add(new Columns(getColumns()).find(join.columnName));
+        }
+
+        return result;
+    }
+
+    private Set<String> getJoinColumnNames() {
+        Set<String> result = new HashSet<>();
+        for (Join join : joins) result.addAll(new Columns(join.joinTable.getColumns()).getNames());
+        return result;
+    }
+
     @Override
     public List<Map<String, Object>> fetch() {
         if (sortBy != null) {
             // need to sort
-            List<Column> sortColumns = new ArrayList<>();
-            sortColumns.add(new Column(new PropertyExtractor(idProperty), idProperty));
-            for (String s : sortBy) sortColumns.add(new Columns(columns).find(s));
+            List<Column> sortColumnsForFetch = getColumnsForSort();
+            List<Map<String, Object>> dataForSort = safeFetch(source, columns, sortColumnsForFetch, filters);
 
-            List<Map<String, Object>> dataForSort = safeFetch(source, columns, sortColumns, filters);
+            join(dataForSort);
 
             List<Comparator<Map<String, Object>>> c = new ArrayList<>();
-            for (final String s : sortBy) c.add(new StringComparator(s));
+            for (final String s : sortBy) c.add(new StringKeyComparator(s));
             Collections.sort(dataForSort, new LeftToRightComparator<>(c));
 
             List<Serializable> uids = new ArrayList<>();
@@ -79,6 +101,11 @@ public class RemoteTable implements Table {
         }
     }
 
+    @Override
+    public List<Column> getColumns() {
+        return columns;
+    }
+
     private List<Map<String, Object>> safeFetch(
             Source source, List<Column> allColumns, List<Column> fetchColumns,
             Map<String, Filter> filters) {
@@ -89,6 +116,12 @@ public class RemoteTable implements Table {
             throw new RuntimeException(e);
         }
 
+        join(data);
+
+        return data;
+    }
+
+    private void join(List<Map<String, Object>> data) {
         for (final Join join : joins) {
             final List<Map<String, Object>> joinData = join.joinTable.fetch();
             final Map<Object, List<Map<String, Object>>> joinMap = groupBy(joinData, join.joinColumnName);
@@ -104,8 +137,6 @@ public class RemoteTable implements Table {
                 }
             }
         }
-
-        return data;
     }
 
     public RemoteTable sortBy(final String firstColumnName, final String... columnNames) {

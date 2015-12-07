@@ -3,11 +3,11 @@ package com.github.terma.gigaspaceroutine.comparators;
 import java.util.Comparator;
 import java.util.Map;
 
-public class StringComparator implements Comparator<Map<String, Object>> {
+public class StringKeyComparator implements Comparator<Map<String, Object>> {
 
     private final String key;
 
-    public StringComparator(String key) {
+    public StringKeyComparator(String key) {
         this.key = key;
     }
 

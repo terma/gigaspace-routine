@@ -10,10 +10,10 @@ import java.util.Map;
 public class IntSumByProperty implements Serializable {
 
     private final String aggregateProperty;
-    private final Extractor<Integer> extractor;
+    private final Extractor<SpaceDocument, Integer> extractor;
     private final HashMap<Serializable, Integer> counts = new HashMap<>();
 
-    public IntSumByProperty(final String aggregateProperty, Extractor<Integer> extractor) {
+    public IntSumByProperty(final String aggregateProperty, Extractor<SpaceDocument, Integer> extractor) {
         this.aggregateProperty = aggregateProperty;
         this.extractor = extractor;
     }
