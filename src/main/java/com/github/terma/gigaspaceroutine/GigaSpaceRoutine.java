@@ -11,25 +11,23 @@ See the License for the specific language governing permissions and
 limitations under the License.
  */
 
-package com.github.terma.gigaspaceroutine.tasks;
+package com.github.terma.gigaspaceroutine;
 
-import com.gigaspaces.async.AsyncResult;
+import org.openspaces.core.GigaSpace;
 import org.openspaces.core.executor.DistributedTask;
 
 import java.io.Serializable;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.concurrent.ExecutionException;
 
-public abstract class ListDistributedTask<T extends Serializable> implements DistributedTask<ArrayList<T>, List<T>> {
+public class GigaSpaceRoutine {
 
-    @Override
-    public List<T> reduce(List<AsyncResult<ArrayList<T>>> list) throws Exception {
-        List<T> r = new ArrayList<>();
-        for (AsyncResult<ArrayList<T>> portion : list) {
-            if (portion.getException() != null) throw new RuntimeException(portion.getException());
-            r.addAll(portion.getResult());
+    public static <R extends Serializable, T> T execute(
+            final GigaSpace gigaSpace, final DistributedTask<R, T> distributedTask) {
+        try {
+            return gigaSpace.execute(distributedTask).get();
+        } catch (ExecutionException | InterruptedException e) {
+            throw new RuntimeException(e);
         }
-        return r;
     }
 
 }
