@@ -4,10 +4,10 @@ import com.gigaspaces.document.SpaceDocument;
 import com.github.terma.gigaspaceroutine.extractors.NoExtractor;
 import com.github.terma.gigaspaceroutine.extractors.PropertyExtractor;
 import com.github.terma.gigaspaceroutine.filters.EqFilter;
+import com.github.terma.gigaspaceroutine.sources.Source;
 import com.j_spaces.core.client.SQLQuery;
 import junit.framework.Assert;
 import org.junit.Before;
-import org.junit.Ignore;
 import org.junit.Test;
 import org.openspaces.core.GigaSpace;
 
@@ -141,12 +141,57 @@ public class RemoteTableTest {
 
     }
 
-    @Ignore
     @Test
-    public void joinAndFetchFiltered() {
-        Table tableA = new LocalTable(columns, null);
-        new RemoteTable("A", gigaSpace, source, columns).join("C1", tableA, "id").addFilter("name", new EqFilter(true)).fetch();
+    public void fetchFilteredByJoin() {
+        // given
+        gigaSpace.clear(null);
+        writeDocument(gigaSpace, false, "Z");
+        writeDocument(gigaSpace, false, "A");
+        writeDocument(gigaSpace, false, "E");
+        Table tableA = new LocalTable(
+                Arrays.asList(
+                        new Column(NoExtractor.get(), "id"),
+                        new Column(NoExtractor.get(), "name")),
+                Arrays.asList(
+                        (Map<String, Object>) new HashMap<String, Object>() {{
+                            put("name", "Zoma");
+                            put("id", "Z");
+                        }}, new HashMap<String, Object>() {{
+                            put("name", "Aoma");
+                            put("id", "A");
+                        }}, new HashMap<String, Object>() {{
+                            put("name", "Ooma");
+                            put("id", "E");
+                        }}));
 
+        // when
+        List<Map<String, Object>> data = new RemoteTable("A", gigaSpace, source, columns)
+                .join("C1", tableA, "id")
+                .addFilter("name", new EqFilter("Aoma"))
+                .fetch();
+
+        // then
+        Assert.assertEquals(1, data.size());
     }
+
+    @Test
+    public void fetchFirstNSortedAndFiltered() {
+        // given
+        gigaSpace.clear(null);
+        writeDocument(gigaSpace, false, "Z");
+        writeDocument(gigaSpace, false, "Z");
+        writeDocument(gigaSpace, false, "Z");
+
+        // when
+        List<Map<String, Object>> data = new RemoteTable("A", gigaSpace, source, columns)
+                .addFilter("C1", new EqFilter("Z"))
+                .sortBy("C1")
+                .fetch(1);
+
+        // then
+        Assert.assertEquals(1, data.size());
+    }
+
+    // todo support fetch by batch
 
 }

@@ -19,6 +19,11 @@ public class LocalTable implements Table {
     }
 
     @Override
+    public List<Map<String, Object>> fetch(int limit) {
+        return data;
+    }
+
+    @Override
     public List<Column> getColumns() {
         return columns;
     }

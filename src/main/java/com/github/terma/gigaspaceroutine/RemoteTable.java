@@ -2,12 +2,12 @@ package com.github.terma.gigaspaceroutine;
 
 import com.gigaspaces.async.AsyncResult;
 import com.gigaspaces.document.SpaceDocument;
-import com.gigaspaces.query.IdsQuery;
 import com.github.terma.gigaspaceroutine.comparators.LeftToRightComparator;
 import com.github.terma.gigaspaceroutine.comparators.StringKeyComparator;
 import com.github.terma.gigaspaceroutine.extractors.PropertyExtractor;
 import com.github.terma.gigaspaceroutine.filters.Filter;
-import com.j_spaces.core.client.SQLQuery;
+import com.github.terma.gigaspaceroutine.filters.InFilter;
+import com.github.terma.gigaspaceroutine.sources.Source;
 import org.openspaces.core.GigaSpace;
 import org.openspaces.core.executor.DistributedTask;
 import org.openspaces.core.executor.TaskGigaSpace;
@@ -27,27 +27,12 @@ public class RemoteTable implements Table {
     private List<String> sortBy;
 
     public RemoteTable(String idProperty, GigaSpace gigaSpace, Source source, List<Column> columns) {
-        this.idProperty = idProperty;
-        this.gigaSpace = gigaSpace;
         if (source == null) throw new IllegalArgumentException("Need not null source!");
 
+        this.idProperty = idProperty;
+        this.gigaSpace = gigaSpace;
         this.source = source;
         this.columns = columns;
-    }
-
-    private static <K, V> Map<V, List<Map<K, V>>> groupBy(List<Map<K, V>> list, K key) {
-        Map<V, List<Map<K, V>>> grouped = new HashMap<>();
-        for (Map<K, V> item : list) {
-            V keyValue = item.get(key);
-            List<Map<K, V>> v = grouped.get(keyValue);
-            if (v == null) {
-                v = new ArrayList<>();
-                grouped.put(keyValue, v);
-            }
-
-            v.add(item);
-        }
-        return grouped;
     }
 
     public RemoteTable addFilter(String columnName, Filter filter) {
@@ -80,10 +65,16 @@ public class RemoteTable implements Table {
 
     @Override
     public List<Map<String, Object>> fetch() {
+        return fetch(Integer.MAX_VALUE);
+    }
+
+    @Override
+    public List<Map<String, Object>> fetch(final int limit) {
         if (sortBy != null) {
             // need to sort
             List<Column> sortColumnsForFetch = getColumnsForSort();
-            List<Map<String, Object>> dataForSort = safeFetch(source, columns, sortColumnsForFetch, filters);
+            List<Map<String, Object>> dataForSort = safeFetch(source, columns,
+                    sortColumnsForFetch, filters, Integer.MAX_VALUE);
 
             join(dataForSort);
 
@@ -92,12 +83,15 @@ public class RemoteTable implements Table {
             Collections.sort(dataForSort, new LeftToRightComparator<>(c));
 
             List<Serializable> uids = new ArrayList<>();
-            for (Map<String, Object> d : dataForSort) uids.add((Serializable) d.get(idProperty));
+            for (Map<String, Object> d : dataForSort) {
+                if (uids.size() >= limit) break;
+                uids.add((Serializable) d.get(idProperty));
+            }
 
             Source idsSource = source.toIds(uids);
-            return safeFetch(idsSource, columns, columns, Collections.<String, Filter>emptyMap());
+            return safeFetch(idsSource, columns, columns, Collections.<String, Filter>emptyMap(), limit);
         } else {
-            return safeFetch(source, columns, columns, filters);
+            return safeFetch(source, columns, columns, filters, limit);
         }
     }
 
@@ -106,12 +100,41 @@ public class RemoteTable implements Table {
         return columns;
     }
 
+    private Join getJoinByColumn(String columnName) {
+        for (Join join : joins) {
+            if (new Columns(join.joinTable.getColumns()).getNames().contains(columnName)) {
+                return join;
+            }
+        }
+        throw new IllegalArgumentException("Can't find column: " + columnName + " in joins: " + joins);
+    }
+
     private List<Map<String, Object>> safeFetch(
-            Source source, List<Column> allColumns, List<Column> fetchColumns,
-            Map<String, Filter> filters) {
+            final Source source, List<Column> allColumns, final List<Column> fetchColumns,
+            final Map<String, Filter> filters, final int limit) {
+        Set<String> joinNames = getJoinColumnNames();
+        Map<String, Filter> remoteFilters = new HashMap<>();
+        for (Map.Entry<String, Filter> f : filters.entrySet()) {
+            if (joinNames.contains(f.getKey())) {
+                Join join = getJoinByColumn(f.getKey());
+                Set<Object> in = new HashSet<>();
+                // todo filtering on join table should be part of that table
+                for (Map<String, Object> i : join.joinTable.fetch()) {
+                    if (f.getValue().check(i.get(f.getKey()))) {
+                        in.add(i.get(join.joinColumnName));
+                    }
+                }
+                remoteFilters.put(join.columnName, new InFilter(in));
+            } else {
+                remoteFilters.put(f.getKey(), f.getValue());
+            }
+        }
+
+        // real fetch
         List<Map<String, Object>> data;
         try {
-            data = gigaSpace.execute(new RemoteTableFetchTask(source, allColumns, fetchColumns, filters)).get();
+            data = gigaSpace.execute(new RemoteTableFetchTask(source, allColumns,
+                    fetchColumns, remoteFilters, limit)).get();
         } catch (ExecutionException | InterruptedException e) {
             throw new RuntimeException(e);
         }
@@ -124,7 +147,7 @@ public class RemoteTable implements Table {
     private void join(List<Map<String, Object>> data) {
         for (final Join join : joins) {
             final List<Map<String, Object>> joinData = join.joinTable.fetch();
-            final Map<Object, List<Map<String, Object>>> joinMap = groupBy(joinData, join.joinColumnName);
+            final Map<Object, List<Map<String, Object>>> joinMap = Maps.groupBy(joinData, join.joinColumnName);
 
             for (Map<String, Object> item : data) {
                 Object joinValue = item.get(join.columnName);
@@ -173,25 +196,32 @@ class RemoteTableFetchTask implements DistributedTask<ArrayList<HashMap<String, 
     private final ArrayList<Column> allColumns;
     private final ArrayList<Column> fetchColumns;
     private final HashMap<String, Filter> filters;
+    private final int limit;
 
     @TaskGigaSpace
     private GigaSpace gigaSpace;
 
     RemoteTableFetchTask(
             Source source, List<Column> allColumns,
-            List<Column> fetchColumns, Map<String, Filter> filters) {
+            List<Column> fetchColumns, Map<String, Filter> filters, final int limit) {
         this.source = source;
         this.allColumns = new ArrayList<>(allColumns);
         this.fetchColumns = new ArrayList<>(fetchColumns);
         this.filters = new HashMap<>(filters);
+        this.limit = limit;
     }
 
     @Override
     public List<Map<String, Object>> reduce(List<AsyncResult<ArrayList<HashMap<String, Serializable>>>> list) throws Exception {
-        List<Map<String, Object>> result = new ArrayList<>();
-        for (AsyncResult<ArrayList<HashMap<String, Serializable>>> part : list) {
+        final List<Map<String, Object>> result = new ArrayList<>();
+        start:
+        for (final AsyncResult<ArrayList<HashMap<String, Serializable>>> part : list) {
             if (part.getException() != null) throw new RuntimeException(part.getException());
-            result.addAll((List<Map<String, Object>>) ((Object) part.getResult()));
+
+            for (Map<String, Serializable> item : part.getResult()) {
+                if (result.size() >= limit) break start;
+                result.add((Map<String, Object>) ((Object) item));
+            }
         }
         return result;
     }
@@ -211,67 +241,10 @@ class RemoteTableFetchTask implements DistributedTask<ArrayList<HashMap<String, 
                 Object value = column.getExtractor().extract(spaceDocument);
                 hashMap.put(column.getName(), value);
             }
+
             result.add(hashMap);
+            if (result.size() >= limit) break;
         }
         return result;
     }
 }
-
-abstract class Source implements Serializable {
-
-    public static Source fromList(List list) {
-        return null;
-    }
-
-    public static Source fromQueryByIds(IdsQuery query) {
-        return new IdsSource(query);
-    }
-
-    public static Source fromQueryByIds(SQLQuery<SpaceDocument> query) {
-        return new QuerySource(query);
-    }
-
-    public abstract ArrayList<SpaceDocument> fetch(GigaSpace gigaSpace);
-
-    public abstract Source toIds(List<Serializable> uids);
-
-}
-
-class QuerySource extends Source {
-
-    private SQLQuery<SpaceDocument> query;
-
-    public QuerySource(SQLQuery query) {
-        this.query = query;
-    }
-
-    public ArrayList<SpaceDocument> fetch(GigaSpace gigaSpace) {
-        return new ArrayList<>(Arrays.asList(gigaSpace.readMultiple(query)));
-    }
-
-    @Override
-    public Source toIds(List<Serializable> ids) {
-        return new IdsSource(new IdsQuery<SpaceDocument>(query.getTypeName(), ids.toArray()));
-    }
-
-}
-
-class IdsSource extends Source {
-
-    private final IdsQuery<SpaceDocument> idsQuery;
-
-    public IdsSource(IdsQuery<SpaceDocument> query) {
-        this.idsQuery = query;
-    }
-
-    public ArrayList<SpaceDocument> fetch(GigaSpace gigaSpace) {
-        return new ArrayList<>(Arrays.asList(gigaSpace.readByIds(idsQuery).getResultsArray()));
-    }
-
-    @Override
-    public Source toIds(List<Serializable> ids) {
-        throw new UnsupportedOperationException();
-    }
-
-}
-
